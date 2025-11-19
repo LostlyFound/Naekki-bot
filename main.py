@@ -20,6 +20,7 @@ class MyClient(discord.Client):
         print('Slash commands synced globally.')
 
 
+@app_commands.command(name="hello")
 @app_commands.describe(name="The name of the person to greet.")
 async def hello_command(interaction: discord.Interaction, name: str):
     """Greets the user with a friendly message!"""
