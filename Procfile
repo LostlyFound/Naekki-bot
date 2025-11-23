@@ -1,1 +1,1 @@
-web: python3 main.py
+web: poetry run python main.py
