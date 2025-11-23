@@ -39,3 +39,13 @@ args = "python main.py"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[userenv]
+
+[userenv.shared]
+ALEXA_WEBHOOK_URL = "https://api-v2.voicemonkey.io/trigger?token=9a8f505ad4756eaf4bb9e5fa6f57fe99_9eddfd903ecdb9cba3e1c54b8220eaf2&device=discordwakeup"
+ALLOWED_USER_IDS = "1440657503305076758,854578071675994122"
+
+[[ports]]
+localPort = 8080
+externalPort = 80
