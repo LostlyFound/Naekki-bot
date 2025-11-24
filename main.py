@@ -4,14 +4,12 @@ import os
 from dotenv import load_dotenv
 import asyncio
 from discord import app_commands
+from webserver import keep_alive
 
 COMMAND_PREFIX = 'e!'
 
 intents = discord.Intents.default()
 intents.message_content = True
-# FIX: Added the Server Members Intent. This is required for commands
-# that take a discord.Member as an argument (like /hug and /kiss)
-# to correctly resolve the member object.
 intents.members = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
@@ -128,6 +126,8 @@ async def dm_test_command(ctx: commands.Context):
             f"This command is best used in a private chat or group message with me. Try sending me a DM, {ctx.author.mention}!"
         )
 
+
+keep_alive()
 
 # Load token from environment variable
 load_dotenv()
