@@ -1,101 +1,101 @@
-from flask import Flask, request
 import os
 import requests
-import urllib.parse
 import json
+import logging
+import asyncio
+from discord.ext import commands
+from discord.ext.commands import Cog
 
-app = Flask(__name__)
+# Set up logging for the cog
+logger = logging.getLogger('WebhookServerCog')
+logger.setLevel(logging.INFO)
 
-# Load secrets from environment variables
-WEBHOOK_AUTH_TOKEN = os.getenv("WEBHOOK_AUTH_TOKEN")
-DEFAULT_CHANNEL_ID = os.getenv("DEFAULT_CHANNEL_ID")
-VOICE_MONKEY_BASE_URL = os.getenv("VOICE_MONKEY_BASE_URL") # << NEW SECRET
+# --- Configuration ---
+# Your unique Voice Monkey Trigger URL, loaded from environment variables
+VOICE_MONKEY_URL = os.getenv("VOICE_MONKEY_URL")
 
-# =========================================================================
-# NEW DYNAMIC SONG ROUTE (The Free Solution)
-# =========================================================================
-@app.route("/dynamic-song-trigger", methods=["GET"])
-def dynamic_song_trigger():
+# --- Web Server/Cog Setup ---
+
+class WebhookServerCog(Cog):
     """
-    Receives the song name from the Discord bot, constructs the exact 
-    Voice Monkey command, and sends it directly.
+    A Cog designed to run an internal web server thread to handle incoming 
+    HTTP requests from the Discord bot, acting as a proxy to Voice Monkey.
+    
+    Note: Since discord.py cogs are primarily for Discord events, we implement 
+    the web server logic to run alongside the bot process.
     """
-    
-    # Extract data from the URL query parameters
-    song_name = request.args.get("song", "Default Alarm")
-    user_name = request.args.get("user", "Someone")
-    
-    # 1. Check for the Voice Monkey Base URL
-    if not VOICE_MONKEY_BASE_URL:
-        print("ERROR: VOICE_MONKEY_BASE_URL not set!")
-        return "Internal Configuration Error: Voice Monkey URL Missing", 500
+    def __init__(self, bot):
+        self.bot = bot
+        # Attempt to start the web server in a separate thread/task when the cog loads
+        self.bot.loop.create_task(self.start_web_server())
 
-    # 2. Construct the Alexa command string (e.g., "play Never Gonna Give You Up on Spotify")
-    # You can change "Spotify" to your preferred music service.
-    alexa_command = f"play {song_name} on Spotify" 
+    # --- HTTP Server Logic (Using Flask/Aiohttp equivalent for clarity) ---
     
-    # 3. URL-encode the command string (absolutely necessary!)
-    encoded_command = urllib.parse.quote_plus(alexa_command)
-
-    # 4. Construct the FINAL Voice Monkey URL
-    # We append the custom command parameter directly to the base URL
-    final_vm_url = f"{VOICE_MONKEY_BASE_URL}&command={encoded_command}"
-    
-    print(f"Sending FINAL VM URL: {final_vm_url}")
-    
-    try:
-        # 5. Send the request to Voice Monkey
-        response = requests.get(final_vm_url, timeout=5)
+    async def start_web_server(self):
+        """
+        Simulates starting an HTTP server task specifically to handle requests 
+        from the Discord bot's /wakeup command.
         
-        if response.status_code == 200:
-            return f"Requested **{song_name}** for {user_name}.", 200
-        else:
-            print(f"Voice Monkey API failed: {response.status_code}, {response.text}")
-            return f"Voice Monkey API Error: Status {response.status_code}", 503
+        This function serves as a placeholder. You must ensure your actual 
+        web framework (like Flask/FastAPI) is running on port 8080 and calls
+        the 'dynamic_song_trigger' function below when it receives a GET request
+        to the '/dynamic-song-trigger' endpoint.
+        """
+        logger.info("Webhook server logic initialized. Awaiting requests on the main web server (Port 8080).")
+        # In a real setup, your main bot file's web server thread must call:
+        # result, status_code = self.dynamic_song_trigger(song, user)
+        pass
+
+    # --- Core Dynamic Song Trigger Function ---
+    
+    def dynamic_song_trigger(self, song_name: str, user_name: str):
+        """
+        Handles the request coming from the Discord bot and makes the API call 
+        to Voice Monkey.
+        """
+        if not VOICE_MONKEY_URL:
+            logger.error("VOICE_MONKEY_URL is not set in environment variables.")
+            return {"error": "Server not configured with Voice Monkey URL."}, 500
+
+        # Create a dynamic message for Alexa to say
+        announcement_text = f"Wake up {user_name}! Playing {song_name} now."
+        
+        # Data payload for Voice Monkey (adjust keys based on your specific setup)
+        payload = {
+            "monkey": announcement_text,
+            "announcement": "true",
+            "volume": 75 # Set an appropriate volume
+        }
+
+        # The Voice Monkey URL should already contain the correct trigger/device ID
+        try:
+            # We use a POST request here as Voice Monkey typically expects a body payload
+            response = requests.post(VOICE_MONKEY_URL, data=json.dumps(payload), timeout=10)
             
-    except requests.exceptions.RequestException as e:
-        print(f"Error connecting to Voice Monkey: {e}")
-        return "Failed to connect to Voice Monkey.", 503
+            if response.status_code == 200:
+                logger.info(f"Successfully triggered Voice Monkey for song: {song_name}")
+                return {"status": "success", "message": "Voice Monkey triggered."}, 200
+            else:
+                logger.error(f"Voice Monkey API failed: Status {response.status_code}, Response: {response.text}")
+                return {"error": f"Voice Monkey returned status code {response.status_code}"}, 502
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error calling Voice Monkey: {e}")
+            return {"error": f"Network error during Voice Monkey call: {e}"}, 503
 
 
-# =========================================================================
-# EXISTING WEBHOOK ROUTE (Keep your old Alexa/IFTTT trigger for stability)
-# =========================================================================
-@app.route("/alexa-trigger", methods=["POST"])
-def alexa_trigger():
+# --- Setup and Teardown Functions for the Bot's Extension System ---
+
+async def setup(bot):
     """
-    Receives triggers from an external service (like Voice Monkey)
-    to make the bot speak in Discord.
+    Required function to load the cog into the bot.
     """
-    
-    data = request.get_json(silent=True)
-    
-    if not data or not data.get("auth_token") == WEBHOOK_AUTH_TOKEN:
-        return {"status": "Unauthorized"}, 401
+    await bot.add_cog(WebhookServerCog(bot))
+    logger.info("WebhookServerCog successfully loaded.")
 
-    message_content = data.get("message", "A custom command was triggered!")
-    
-    # This part assumes you have access to your Discord bot's methods 
-    # to send a message. Since the web server runs separately, this is a placeholder.
-    # In a real setup, this would use a dedicated message queue or Discord API call.
-    print(f"Received message to send to Discord: {message_content}")
-    
-    # Placeholder response to confirm receipt
-    return {"status": "Message received, attempting to send to Discord"}, 200
-
-
-# =========================================================================
-# KEEPALIVE ROUTE
-# =========================================================================
-@app.route("/", methods=["GET"])
-def keep_alive():
-    return "AI Chat Bot Webhook Server Running", 200
-
-
-if __name__ == "__main__":
-    # Ensure this runs the server in the main bot process if required,
-    # or runs separately if you have a multi-process setup.
-    # For Render/single-process bots, you might launch this from main.py
-    # using threading or run it in a separate service.
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+async def teardown(bot):
+    """
+    Required function to unload the cog from the bot.
+    """
+    await bot.remove_cog("WebhookServerCog")
+    logger.info("WebhookServerCog successfully unloaded.")
