@@ -4,25 +4,27 @@ from discord import app_commands
 import aiohttp
 import os
 import asyncio
+import urllib.parse # Added for URL encoding
 
 class Wakeup(commands.Cog):
     """A Cog for the custom Wakeup command integrated with a Webhook/IFTTT."""
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Load the secret Webhook URL from Replit Secrets
-        self.webhook_url = os.getenv("ALEXA_WEBHOOK_URL")
-        # Load authorized user IDs from environment variable
+        # NOTE: This is now the URL of the bot's OWN public server endpoint!
+        # Render Public URL is stored in an env variable named "RENDER_EXTERNAL_URL"
+        self.base_url = os.getenv("RENDER_EXTERNAL_URL")
         self.allowed_users = self._load_allowed_users()
+        # The internal endpoint that processes the request
+        self.proxy_endpoint = "/dynamic-song-trigger"
         
     def _load_allowed_users(self):
-        """Loads and converts the comma-separated string of allowed user IDs."""
+        # ... (unchanged)
         user_ids_str = os.getenv("ALLOWED_USER_IDS")
         if not user_ids_str:
             print("WARNING: ALLOWED_USER_IDS not set. Wakeup command will not work.")
             return []
         
-        # Convert IDs to integers for comparison
         try:
             return [int(uid.strip()) for uid in user_ids_str.split(',')]
         except ValueError:
@@ -30,45 +32,39 @@ class Wakeup(commands.Cog):
             return []
 
     async def _trigger_alexa_webhook(self, user_name, song=None):
-        """Sends the HTTP request to the external service (e.g., IFTTT/Webhook)."""
-        if not self.webhook_url:
-            return "❌ **Configuration Error:** The `ALEXA_WEBHOOK_URL` secret is not set! I can't send the signal."
+        """Sends the request to the bot's own internal proxy server."""
         
-        if not self.allowed_users:
-             return "❌ **Configuration Error:** The `ALLOWED_USER_IDS` secret is not set or formatted incorrectly! I don't know who is allowed."
-
-        # Determine the message/song to send
-        # value1: User who triggered it
-        # value2: The song name (or default text)
-        # value3: Status message
-        song_message = f"playing {song}" if song else "Playing alarm/music now"
+        if not self.base_url:
+            return "❌ **Configuration Error:** The `RENDER_EXTERNAL_URL` secret is missing. I can't find my own server!"
         
-        payload = {
-            "value1": user_name,
-            "value2": song if song else "Default Alarm", 
-            "value3": song_message
-        }
+        # 1. URL-encode the song name (required for safe transmission)
+        encoded_song = urllib.parse.quote_plus(song or "Default Alarm")
+        
+        # 2. Construct the full URL to the proxy endpoint
+        full_url = f"{self.base_url}{self.proxy_endpoint}?song={encoded_song}&user={urllib.parse.quote_plus(user_name)}"
+        
+        print(f"Sending request to internal proxy: {full_url}")
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.webhook_url, json=payload, timeout=5) as response:
+                # We send a GET request as a simple trigger
+                async with session.get(full_url, timeout=10) as response:
+                    
                     if response.status == 200:
-                        msg = f"🔔 **WAKEUP SIGNAL SENT!**\n> Alexa should be waking you up now, LOSTLY!!!"
-                        if song:
-                            msg += f"\n> 🎵 Requesting: **{song}**"
-                        return msg
+                        # The internal server will return a success message
+                        success_message = await response.text()
+                        return f"🔔 **WAKEUP SIGNAL SENT!**\n> {success_message}"
                     else:
                         error_text = await response.text()
-                        print(f"Webhook Failure: Status {response.status}, Response: {error_text}")
-                        return f"⚠️ **Webhook Failed:** I sent the request, but the server responded with an error (Status: {response.status}). Check your `ALEXA_WEBHOOK_URL`."
+                        print(f"Internal Proxy Failure: Status {response.status}, Response: {error_text}")
+                        return f"⚠️ **Proxy Error:** My internal server failed to process the request (Status: {response.status})."
         except asyncio.TimeoutError:
-            return "⏱️ **Timeout Error:** The webhook server took too long to respond. The signal might still have been sent."
+            return "⏱️ **Timeout Error:** My server took too long to talk to Voice Monkey."
         except Exception as e:
-            print(f"General Webhook Error: {e}")
-            return "🚫 **Connection Error:** Something went wrong trying to contact the webhook service."
+            print(f"General Proxy Error: {e}")
+            return "🚫 **Connection Error:** Something went wrong reaching my own server."
 
-
-    # --- SLASH COMMAND (/wakeup [song]) ---
+    # --- SLASH COMMAND and PREFIX COMMAND are UNCHANGED (they just call _trigger_alexa_webhook) ---
     @app_commands.command(name='wakeup', description='Sends a signal to your linked Alexa device to wake you up.')
     @app_commands.describe(song='(Optional) A specific song/playlist to play.')
     @app_commands.allowed_installs(guilds=True, users=True)
@@ -79,18 +75,16 @@ class Wakeup(commands.Cog):
              await interaction.response.send_message("❌ **Permission Denied:** You are not authorized to use this command.", ephemeral=True)
              return
 
-        await interaction.response.defer() # Acknowledge interaction as the webhook may take a moment
+        await interaction.response.defer()
         
         user_name = interaction.user.display_name
         response_text = await self._trigger_alexa_webhook(user_name, song)
         
         await interaction.followup.send(response_text)
 
-
-    # --- PREFIX COMMAND (e!wakeup [song name]) ---
     @commands.command(name='wakeup', help='Sends a signal to your linked Alexa device to wake you up.')
     async def wakeup_prefix(self, ctx: commands.Context, *, song: str = None):
-        # Authorization check
+        # ... (Authorization check and execution is the same)
         if ctx.author.id not in self.allowed_users:
              await ctx.send("❌ **Permission Denied:** You are not authorized to use this command.")
              return
@@ -100,5 +94,5 @@ class Wakeup(commands.Cog):
             response_text = await self._trigger_alexa_webhook(user_name, song)
             await ctx.send(response_text)
 
-async def setup(bot: commands.Bot):
+async def setup(bot: commands.Cog):
     await bot.add_cog(Wakeup(bot))
