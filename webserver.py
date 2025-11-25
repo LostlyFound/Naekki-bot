@@ -29,14 +29,15 @@ async def dynamic_song_trigger(request):
         return web.Response(text="Error: VOICE_MONKEY_BASE_URL not configured.", status=500)
 
     # 1. Construct the Alexa command
-    # NOTE: We use Spotify here, but you can change it to "Amazon Music" or another service.
+    # This is the exact phrase Alexa needs to hear to play music.
     alexa_command = f"play {song_name} on Spotify"
     
-    # 2. URL-encode the command (CRITICAL step for special characters)
+    # 2. URL-encode the command (CRITICAL step for special characters like spaces)
     encoded_command = urllib.parse.quote_plus(alexa_command)
     
     # 3. Construct final Voice Monkey URL
     # We append the custom command parameter directly to the base URL
+    # NOTE: We use '&command=' assuming the BASE_URL already contains the initial '?' for query start.
     final_vm_url = f"{VOICE_MONKEY_BASE_URL}&command={encoded_command}"
     
     print(f"Triggering Voice Monkey: {final_vm_url}")
@@ -47,7 +48,15 @@ async def dynamic_song_trigger(request):
             # Send the request to Voice Monkey
             async with session.get(final_vm_url) as response:
                 if response.status == 200:
-                    return web.Response(text=f"Successfully requested '{song_name}' for {user_name}.", status=200)
+                    # Check for "success" in the response text (Voice Monkey often returns JSON)
+                    response_text = await response.text()
+                    if "success" in response_text.lower():
+                        print(f"Voice Monkey success response: {response_text}")
+                        return web.Response(text=f"Successfully requested '{song_name}' for {user_name}.", status=200)
+                    else:
+                         # Voice Monkey responded 200, but execution failed (e.g., command syntax error)
+                        print(f"Voice Monkey 200 but execution likely failed. Response: {response_text}")
+                        return web.Response(text=f"VM 200 OK, but command execution failed. Alexa may need a moment or the command syntax is wrong.", status=500)
                 else:
                     error_text = await response.text()
                     print(f"Voice Monkey API returned non-200 status: {response.status}. Response: {error_text}")
@@ -56,13 +65,11 @@ async def dynamic_song_trigger(request):
         print(f"Network error during Voice Monkey call: {e}")
         return web.Response(text=f"Internal Error during network call: {str(e)}", status=500)
 
-# --- Server Logic ---
+# --- Server Logic (Unchanged) ---
 
 def start_server():
     """Starts the aiohttp web server in its own thread."""
-    # Render provides the port number via the PORT environment variable
     try:
-        # Ensure we read the port defined by the hosting environment
         port = int(os.environ.get('PORT', 8080))
     except (TypeError, ValueError):
         port = 8080 
@@ -70,12 +77,9 @@ def start_server():
     print(f"Starting web server on port {port}...")
 
     app = web.Application()
-    # 1. Route for UptimeRobot (Keep Alive)
     app.router.add_get('/', keep_awake_handler)
-    # 2. Route for Wakeup Command (Alexa Trigger)
     app.router.add_get('/dynamic-song-trigger', dynamic_song_trigger)
     
-    # Create a new event loop for this thread to manage the server asynchronously
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -83,17 +87,13 @@ def start_server():
     loop.run_until_complete(runner.setup())
     site = web.TCPSite(runner, '0.0.0.0', port)
     
-    # Start serving
     loop.run_until_complete(site.start())
     loop.run_forever()
 
-# --- THE ESSENTIAL FUNCTION FOR MAIN.PY ---
 def keep_alive():
     """Launches the web server in a separate daemon thread."""
-    # This function is what main.py imports and executes.
     t = threading.Thread(target=start_server, daemon=True)
     t.start()
 
 if __name__ == "__main__":
-    # If you run webserver.py directly, it starts the server.
     keep_alive()
