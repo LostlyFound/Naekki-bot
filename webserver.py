@@ -7,12 +7,12 @@ from discord.ext import commands
 from discord.ext.commands import Cog
 
 # Set up logging for the cog
-logger = logging.getLogger('Webserver')
+logger = logging.getLogger('WebhookServerCog')
 logger.setLevel(logging.INFO)
 
 # --- Configuration ---
 # Your unique Voice Monkey Trigger URL, loaded from environment variables
-VOICE_MONKEY_URL = os.getenv("VOICE_MONKEY_BASE_URL")
+VOICE_MONKEY_URL = os.getenv("VOICE_MONKEY_URL")
 
 # --- Web Server/Cog Setup ---
 
