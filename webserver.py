@@ -1,101 +1,99 @@
 import os
-import requests
-import json
-import logging
+import threading
 import asyncio
-from discord.ext import commands
-from discord.ext.commands import Cog
-
-# Set up logging for the cog
-logger = logging.getLogger('WebhookServerCog')
-logger.setLevel(logging.INFO)
+import urllib.parse
+import aiohttp
+from aiohttp import web
 
 # --- Configuration ---
-# Your unique Voice Monkey Trigger URL, loaded from environment variables
-VOICE_MONKEY_URL = os.getenv("VOICE_MONKEY_URL")
+# Base URL for Voice Monkey API (Set this in your Environment Variables!)
+# Example Format: https://api.voicemonkey.io/trigger?token=...&secret=...&monkey=...
+VOICE_MONKEY_BASE_URL = os.getenv("VOICE_MONKEY_BASE_URL")
 
-# --- Web Server/Cog Setup ---
+# --- Handlers ---
 
-class WebhookServerCog(Cog):
+async def keep_awake_handler(request):
+    """Responds with a simple status to keep the Render service awake."""
+    return web.Response(text="Bot is running and awake.", status=200)
+
+async def dynamic_song_trigger(request):
     """
-    A Cog designed to run an internal web server thread to handle incoming 
-    HTTP requests from the Discord bot, acting as a proxy to Voice Monkey.
-    
-    Note: Since discord.py cogs are primarily for Discord events, we implement 
-    the web server logic to run alongside the bot process.
+    Handles the request from the Discord bot to play a specific song via Voice Monkey.
+    Expects query parameters: ?song=SongName&user=UserName
     """
-    def __init__(self, bot):
-        self.bot = bot
-        # Attempt to start the web server in a separate thread/task when the cog loads
-        self.bot.loop.create_task(self.start_web_server())
+    song_name = request.query.get("song", "Default Alarm")
+    user_name = request.query.get("user", "Someone")
 
-    # --- HTTP Server Logic (Using Flask/Aiohttp equivalent for clarity) ---
+    if not VOICE_MONKEY_BASE_URL:
+        print("ERROR: VOICE_MONKEY_BASE_URL not configured.")
+        return web.Response(text="Error: VOICE_MONKEY_BASE_URL not configured.", status=500)
+
+    # 1. Construct the Alexa command
+    # NOTE: We use Spotify here, but you can change it to "Amazon Music" or another service.
+    alexa_command = f"play {song_name} on Spotify"
     
-    async def start_web_server(self):
-        """
-        Simulates starting an HTTP server task specifically to handle requests 
-        from the Discord bot's /wakeup command.
+    # 2. URL-encode the command (CRITICAL step for special characters)
+    encoded_command = urllib.parse.quote_plus(alexa_command)
+    
+    # 3. Construct final Voice Monkey URL
+    # We append the custom command parameter directly to the base URL
+    final_vm_url = f"{VOICE_MONKEY_BASE_URL}&command={encoded_command}"
+    
+    print(f"Triggering Voice Monkey: {final_vm_url}")
+
+    try:
+        # Use aiohttp for asynchronous request handling
+        async with aiohttp.ClientSession() as session:
+            # Send the request to Voice Monkey
+            async with session.get(final_vm_url) as response:
+                if response.status == 200:
+                    return web.Response(text=f"Successfully requested '{song_name}' for {user_name}.", status=200)
+                else:
+                    error_text = await response.text()
+                    print(f"Voice Monkey API returned non-200 status: {response.status}. Response: {error_text}")
+                    return web.Response(text=f"Voice Monkey Error: {error_text}", status=502)
+    except Exception as e:
+        print(f"Network error during Voice Monkey call: {e}")
+        return web.Response(text=f"Internal Error during network call: {str(e)}", status=500)
+
+# --- Server Logic ---
+
+def start_server():
+    """Starts the aiohttp web server in its own thread."""
+    # Render provides the port number via the PORT environment variable
+    try:
+        # Ensure we read the port defined by the hosting environment
+        port = int(os.environ.get('PORT', 8080))
+    except (TypeError, ValueError):
+        port = 8080 
         
-        This function serves as a placeholder. You must ensure your actual 
-        web framework (like Flask/FastAPI) is running on port 8080 and calls
-        the 'dynamic_song_trigger' function below when it receives a GET request
-        to the '/dynamic-song-trigger' endpoint.
-        """
-        logger.info("Webhook server logic initialized. Awaiting requests on the main web server (Port 8080).")
-        # In a real setup, your main bot file's web server thread must call:
-        # result, status_code = self.dynamic_song_trigger(song, user)
-        pass
+    print(f"Starting web server on port {port}...")
 
-    # --- Core Dynamic Song Trigger Function ---
+    app = web.Application()
+    # 1. Route for UptimeRobot (Keep Alive)
+    app.router.add_get('/', keep_awake_handler)
+    # 2. Route for Wakeup Command (Alexa Trigger)
+    app.router.add_get('/dynamic-song-trigger', dynamic_song_trigger)
     
-    def dynamic_song_trigger(self, song_name: str, user_name: str):
-        """
-        Handles the request coming from the Discord bot and makes the API call 
-        to Voice Monkey.
-        """
-        if not VOICE_MONKEY_URL:
-            logger.error("VOICE_MONKEY_URL is not set in environment variables.")
-            return {"error": "Server not configured with Voice Monkey URL."}, 500
+    # Create a new event loop for this thread to manage the server asynchronously
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    runner = web.AppRunner(app)
+    loop.run_until_complete(runner.setup())
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    
+    # Start serving
+    loop.run_until_complete(site.start())
+    loop.run_forever()
 
-        # Create a dynamic message for Alexa to say
-        announcement_text = f"Wake up {user_name}! Playing {song_name} now."
-        
-        # Data payload for Voice Monkey (adjust keys based on your specific setup)
-        payload = {
-            "monkey": announcement_text,
-            "announcement": "true",
-            "volume": 75 # Set an appropriate volume
-        }
+# --- THE ESSENTIAL FUNCTION FOR MAIN.PY ---
+def keep_alive():
+    """Launches the web server in a separate daemon thread."""
+    # This function is what main.py imports and executes.
+    t = threading.Thread(target=start_server, daemon=True)
+    t.start()
 
-        # The Voice Monkey URL should already contain the correct trigger/device ID
-        try:
-            # We use a POST request here as Voice Monkey typically expects a body payload
-            response = requests.post(VOICE_MONKEY_URL, data=json.dumps(payload), timeout=10)
-            
-            if response.status_code == 200:
-                logger.info(f"Successfully triggered Voice Monkey for song: {song_name}")
-                return {"status": "success", "message": "Voice Monkey triggered."}, 200
-            else:
-                logger.error(f"Voice Monkey API failed: Status {response.status_code}, Response: {response.text}")
-                return {"error": f"Voice Monkey returned status code {response.status_code}"}, 502
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error calling Voice Monkey: {e}")
-            return {"error": f"Network error during Voice Monkey call: {e}"}, 503
-
-
-# --- Setup and Teardown Functions for the Bot's Extension System ---
-
-async def setup(bot):
-    """
-    Required function to load the cog into the bot.
-    """
-    await bot.add_cog(WebhookServerCog(bot))
-    logger.info("WebhookServerCog successfully loaded.")
-
-async def teardown(bot):
-    """
-    Required function to unload the cog from the bot.
-    """
-    await bot.remove_cog("WebhookServerCog")
-    logger.info("WebhookServerCog successfully unloaded.")
+if __name__ == "__main__":
+    # If you run webserver.py directly, it starts the server.
+    keep_alive()
